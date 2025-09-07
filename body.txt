@@ -1,0 +1,13 @@
+Hi {{first_name}},
+
+Did you know many dental practices lose 20–30% of new patient inquiries because follow-ups slip through the cracks?
+
+We've built an AI agent that automatically follows up with every lead via SMS/email and books them straight into your calendar.
+
+Clients typically see 5–9 extra appointments in the first 30 days.
+
+Have time for 10-min demo call this week?
+
+Thank you,
+Brandon
+Quantra Labs

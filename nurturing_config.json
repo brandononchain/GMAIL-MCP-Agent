@@ -1,0 +1,24 @@
+{
+  "sender_email": "brandon@quantralabs.com",
+  "sender_name": "Brandon",
+  "company_name": "Quantra Labs",
+  "follow_up_schedule": {
+    "followup_1_days": 3,
+    "followup_2_days": 7,
+    "max_follow_ups": 2
+  },
+  "response_keywords": {
+    "interested": ["interested", "yes", "demo", "call", "meeting", "schedule", "book"],
+    "not_interested": ["not interested", "no thanks", "stop", "unsubscribe", "remove"]
+  },
+  "lead_scoring": {
+    "response_bonus": 10,
+    "interest_bonus": 5,
+    "follow_up_penalty": -1
+  },
+  "automation": {
+    "check_responses_interval_hours": 4,
+    "auto_respond_to_interest": true,
+    "auto_send_follow_ups": true
+  }
+}

@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  lead-nurturing:
+    build: .
+    container_name: lead-nurturing-server
+    restart: unless-stopped
+    
+    # Environment variables
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    
+    # Volume mounts for persistent data
+    volumes:
+      - ./credentials.json:/app/credentials.json:ro
+      - ./contacts.csv:/app/contacts.csv:ro
+      - ./body.txt:/app/body.txt:ro
+      - ./nurturing_config.json:/app/nurturing_config.json:rw
+      - ./lead_tracking.json:/app/lead_tracking.json:rw
+      - ./logs:/app/logs:rw
+      - ./mcp_server.log:/app/mcp_server.log:rw
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
