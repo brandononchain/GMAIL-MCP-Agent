@@ -1,3 +1,5 @@
+**// YOUR INITIAL OUTREACH MESSAGE GOES HERE, THIS IS SAMPLE \\**
+
 Hi {{first_name}},
 
 Did you know many dental practices lose 20–30% of new patient inquiries because follow-ups slip through the cracks?
