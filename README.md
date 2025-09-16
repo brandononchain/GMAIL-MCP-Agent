@@ -38,6 +38,7 @@ A comprehensive, enterprise-grade lead nurturing system that automates Gmail out
 ├── body.txt                  # Email template
 ├── credentials.json          # Gmail API credentials
 ├── nurturing_config.json     # System configuration
+├── gmail_sync_state.json     # Gmail incremental sync state (auto-created)
 ├── requirements.txt          # Python dependencies
 ├── Dockerfile               # Container configuration
 ├── docker-compose.yml       # Deployment setup
