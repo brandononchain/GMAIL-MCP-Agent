@@ -10,13 +10,14 @@ import os
 import time
 import re
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from email.message import EmailMessage
 import base64
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from jinja2 import Template
@@ -34,10 +35,12 @@ class Lead:
     notes: str = ""
 
 class LeadNurturer:
-    def __init__(self, credentials_path: str = "credentials.json", token_path: str = "token.json"):
-        self.service = self._get_service(credentials_path, token_path)
+    def __init__(self, credentials_path: str = "credentials.json", token_path: str = "token.json", service: Any = None):
+        self.service = service or self._get_service(credentials_path, token_path)
         self.leads = self._load_leads()
         self.templates = self._load_templates()
+        self.config = self._load_config()
+        self.sync_state = self._load_sync_state()
         
     def _get_service(self, credentials_path: str, token_path: str):
         """Initialize Gmail service"""
@@ -93,6 +96,30 @@ class LeadNurturer:
             print("No existing tracking data found")
         
         return leads
+
+    def _load_config(self) -> Dict[str, Any]:
+        try:
+            with open('nurturing_config.json', 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def reload_config(self, new_config: Dict[str, Any]):
+        self.config = new_config or {}
+
+    def _load_sync_state(self) -> Dict[str, Any]:
+        try:
+            with open('gmail_sync_state.json', 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {"last_checked_iso": None, "processed_message_ids": []}
+
+    def _save_sync_state(self):
+        try:
+            with open('gmail_sync_state.json', 'w') as f:
+                json.dump(self.sync_state, f, indent=2)
+        except Exception:
+            pass
     
     def _save_leads(self):
         """Save lead tracking data"""
@@ -183,37 +210,80 @@ Quantra Labs
         return templates
     
     def check_for_responses(self):
-        """Check Gmail for responses to our outreach"""
+        """Check Gmail for responses to our outreach with pagination and idempotency"""
         try:
-            # Search for recent emails
-            query = "in:inbox newer_than:1d"
-            results = self.service.users().messages().list(userId='me', q=query).execute()
-            messages = results.get('messages', [])
-            
-            for message in messages:
-                msg = self.service.users().messages().get(userId='me', id=message['id']).execute()
-                headers = msg['payload'].get('headers', [])
-                
-                # Get sender email
-                sender = None
-                subject = None
-                for header in headers:
-                    if header['name'] == 'From':
-                        sender = header['value']
-                    elif header['name'] == 'Subject':
-                        subject = header['value']
-                
-                if sender:
-                    sender_email = re.search(r'<(.+?)>', sender)
-                    if sender_email:
-                        sender_email = sender_email.group(1).lower()
-                    else:
-                        sender_email = sender.lower()
-                    
-                    # Check if this is a response to our outreach
-                    if sender_email in self.leads:
-                        self._process_response(sender_email, subject, msg)
-                        
+            # Build search query
+            newer_than_hours = (
+                self.config.get('automation', {}).get('check_responses_interval_hours', 24)
+            )
+            query_parts = ["in:inbox"]
+            if newer_than_hours:
+                # Gmail supports newer_than with d,m,y; for hours we fallback to after timestamp
+                after_ts = None
+                if self.sync_state.get('last_checked_iso'):
+                    try:
+                        dt = datetime.fromisoformat(self.sync_state['last_checked_iso'])
+                        after_ts = int(dt.timestamp())
+                    except Exception:
+                        after_ts = None
+                if after_ts:
+                    query_parts.append(f"after:{after_ts}")
+                else:
+                    # default to 1d window if no state
+                    query_parts.append("newer_than:1d")
+            query = " ".join(query_parts)
+
+            processed_ids = set(self.sync_state.get('processed_message_ids', []))
+            page_token = None
+            while True:
+                results = self.service.users().messages().list(
+                    userId='me', q=query, pageToken=page_token, maxResults=100
+                ).execute()
+                messages = results.get('messages', [])
+
+                for message in messages:
+                    msg_id = message.get('id')
+                    if not msg_id or msg_id in processed_ids:
+                        continue
+
+                    msg = self.service.users().messages().get(userId='me', id=msg_id, format='full').execute()
+                    headers = msg.get('payload', {}).get('headers', [])
+
+                    sender = None
+                    subject = None
+                    for header in headers:
+                        name = header.get('name')
+                        if name == 'From':
+                            sender = header.get('value')
+                        elif name == 'Subject':
+                            subject = header.get('value')
+
+                    if sender:
+                        sender_email_match = re.search(r'<(.+?)>', sender)
+                        if sender_email_match:
+                            sender_email = sender_email_match.group(1).lower()
+                        else:
+                            sender_email = sender.lower()
+
+                        if sender_email in self.leads:
+                            self._process_response(sender_email, subject or "", msg)
+                            processed_ids.add(msg_id)
+
+                page_token = results.get('nextPageToken')
+                if not page_token:
+                    break
+
+            # Update last checked time and persist processed ids (bounded)
+            self.sync_state['last_checked_iso'] = datetime.utcnow().isoformat()
+            # Keep only last 500 ids to bound file size
+            latest_ids = list(processed_ids)
+            if len(latest_ids) > 500:
+                latest_ids = latest_ids[-500:]
+            self.sync_state['processed_message_ids'] = latest_ids
+            self._save_sync_state()
+
+        except HttpError as he:
+            print(f"Gmail API error checking responses: {he}")
         except Exception as e:
             print(f"Error checking responses: {e}")
     
@@ -228,11 +298,16 @@ Quantra Labs
         response_lower = body.lower()
         
         # Update lead score based on response
-        if any(word in response_lower for word in ['interested', 'yes', 'demo', 'call', 'meeting']):
+        interested_words = self.config.get('response_keywords', {}).get('interested', ['interested','yes','demo','call','meeting','schedule','book'])
+        not_interested_words = self.config.get('response_keywords', {}).get('not_interested', ['not interested','no thanks','stop','unsubscribe','remove'])
+
+        if any(word in response_lower for word in interested_words):
             lead.status = 'interested'
-            lead.lead_score += 10
-            self._send_automated_response(email, 'interested')
-        elif any(word in response_lower for word in ['not interested', 'no thanks', 'stop', 'unsubscribe']):
+            lead.lead_score += int(self.config.get('lead_scoring', {}).get('response_bonus', 10))
+            lead.lead_score += int(self.config.get('lead_scoring', {}).get('interest_bonus', 5))
+            if self.config.get('automation', {}).get('auto_respond_to_interest', True):
+                self._send_automated_response(email, 'interested')
+        elif any(word in response_lower for word in not_interested_words):
             lead.status = 'not_interested'
             lead.lead_score -= 5
         else:
@@ -246,16 +321,42 @@ Quantra Labs
     def _get_message_body(self, message: dict) -> str:
         """Extract message body from Gmail message"""
         try:
-            payload = message['payload']
+            payload = message.get('payload', {})
+            # Prefer text/plain; fallback to text/html stripped
+            def decode_part(part):
+                data = part.get('body', {}).get('data')
+                if not data:
+                    return ""
+                try:
+                    return base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
+                except Exception:
+                    return ""
+
             if 'parts' in payload:
-                for part in payload['parts']:
-                    if part['mimeType'] == 'text/plain':
-                        data = part['body']['data']
-                        return base64.urlsafe_b64decode(data).decode('utf-8')
+                # Walk parts recursively
+                stack = list(payload.get('parts', []))
+                html_candidate = ""
+                while stack:
+                    part = stack.pop()
+                    mime = part.get('mimeType', '')
+                    if 'parts' in part:
+                        stack.extend(part.get('parts', []))
+                    if mime == 'text/plain':
+                        text = decode_part(part)
+                        if text:
+                            return text
+                    elif mime == 'text/html' and not html_candidate:
+                        html_candidate = decode_part(part)
+                if html_candidate:
+                    # Strip HTML tags rudimentarily
+                    return re.sub('<[^<]+?>', '', html_candidate)
             else:
-                if payload['mimeType'] == 'text/plain':
-                    data = payload['body']['data']
-                    return base64.urlsafe_b64decode(data).decode('utf-8')
+                mime = payload.get('mimeType')
+                if mime == 'text/plain':
+                    return decode_part(payload)
+                elif mime == 'text/html':
+                    html = decode_part(payload)
+                    return re.sub('<[^<]+?>', '', html)
         except Exception as e:
             print(f"Error extracting message body: {e}")
         return ""
@@ -275,7 +376,9 @@ Quantra Labs
         try:
             msg = EmailMessage()
             msg["To"] = email
-            msg["From"] = "brandon@quantralabs.com"  # Update with your email
+            sender_email = self.config.get('sender_email') or self.service.users().getProfile(userId='me').execute().get('emailAddress')
+            sender_name = self.config.get('sender_name') or ''
+            msg["From"] = f"{sender_name} <{sender_email}>" if sender_name else sender_email
             msg["Subject"] = subject
             msg.set_content(body)
             
@@ -294,21 +397,27 @@ Quantra Labs
         now = datetime.now()
         
         for email, lead in self.leads.items():
+            if not self.config.get('automation', {}).get('auto_send_follow_ups', True):
+                continue
             if lead.status in ['new', 'contacted'] and lead.last_contact:
                 days_since_contact = (now - lead.last_contact).days
-                
-                # Follow-up 1: 3 days after initial contact
-                if days_since_contact >= 3 and lead.follow_up_count == 0:
+                cfg_schedule = self.config.get('follow_up_schedule', {})
+                fu1_days = int(cfg_schedule.get('followup_1_days', 3))
+                fu2_days = int(cfg_schedule.get('followup_2_days', 7))
+                max_follow = int(cfg_schedule.get('max_follow_ups', 2))
+
+                # Follow-up 1
+                if days_since_contact >= fu1_days and lead.follow_up_count == 0:
                     self._send_follow_up(email, 'followup_1')
                     lead.follow_up_count = 1
                     lead.last_contact = now
-                
-                # Follow-up 2: 7 days after initial contact
-                elif days_since_contact >= 7 and lead.follow_up_count == 1:
+                # Follow-up 2
+                elif days_since_contact >= fu2_days and lead.follow_up_count == 1:
                     self._send_follow_up(email, 'followup_2')
                     lead.follow_up_count = 2
                     lead.last_contact = now
-                    lead.status = 'not_interested'  # Mark as not interested after final follow-up
+                    if max_follow <= 2:
+                        lead.status = 'not_interested'
     
     def _send_follow_up(self, email: str, template_type: str):
         """Send follow-up email"""
@@ -324,7 +433,9 @@ Quantra Labs
         try:
             msg = EmailMessage()
             msg["To"] = email
-            msg["From"] = "brandon@quantralabs.com"  # Update with your email
+            sender_email = self.config.get('sender_email') or self.service.users().getProfile(userId='me').execute().get('emailAddress')
+            sender_name = self.config.get('sender_name') or ''
+            msg["From"] = f"{sender_name} <{sender_email}>" if sender_name else sender_email
             msg["Subject"] = subject
             msg.set_content(body)
             
@@ -350,7 +461,7 @@ Quantra Labs
         print(f"Contacted: {contacted}")
         print(f"Responded: {responded}")
         print(f"Interested: {interested}")
-        print(f"Response Rate: {(responded/contacted*100):.1f}%" if contacted > 0 else "Response Rate: 0%")
+        print(f"Response Rate: {(responded/contacted*100):.1f}%" if contacted > 0 else "Response Rate: N/A")
         print(f"Interest Rate: {(interested/responded*100):.1f}%" if responded > 0 else "Interest Rate: 0%")
         
         # Top leads by score
@@ -373,6 +484,7 @@ Quantra Labs
         
         # Save updated data
         self._save_leads()
+        # Persist sync state already handled in check_for_responses
         
         # Generate report
         self.generate_lead_report()

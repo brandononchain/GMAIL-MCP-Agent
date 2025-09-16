@@ -302,13 +302,17 @@ class LeadNurturingMCPServer:
                 contacted = sum(1 for lead in leads.values() if lead.status != 'new')
                 responded = sum(1 for lead in leads.values() if lead.response_count > 0)
                 interested = sum(1 for lead in leads.values() if lead.status == 'interested')
-                
+
+                response_rate_text = "N/A"
+                if contacted > 0:
+                    response_rate_text = f"{(responded / contacted * 100):.1f}%"
+
                 status_text += f"""
 • Total Leads: {total_leads}
 • Contacted: {contacted}
 • Responded: {responded}
 • Interested: {interested}
-• Response Rate: {(responded/contacted*100):.1f}% (if contacted > 0)
+• Response Rate: {response_rate_text}
 """
             else:
                 status_text += "• No nurturer initialized"
@@ -370,6 +374,13 @@ class LeadNurturingMCPServer:
             
             logger.info(f"Updated configuration: {config_updates}")
             
+            # Hot-reload config into running nurturer
+            try:
+                if self.state.nurturer:
+                    self.state.nurturer.reload_config(config)
+            except Exception as e:
+                logger.warning(f"Failed to hot-reload config into nurturer: {e}")
+
             return CallToolResult(
                 content=[TextContent(
                     type="text", 
@@ -417,7 +428,18 @@ Lead Nurturing System
             
             msg = EmailMessage()
             msg["To"] = test_email
-            msg["From"] = "brandon@quantralabs.com"  # Update with your email
+            try:
+                with open('nurturing_config.json', 'r') as f:
+                    cfg = json.load(f)
+                sender_email = cfg.get('sender_email')
+                sender_name = cfg.get('sender_name') or ''
+            except Exception:
+                sender_email = None
+                sender_name = ''
+
+            fallback_email = self.state.nurturer.service.users().getProfile(userId="me").execute().get("emailAddress")
+            from_header = sender_email or fallback_email
+            msg["From"] = f"{sender_name} <{from_header}>" if sender_name else from_header
             msg["Subject"] = test_subject
             msg.set_content(test_body)
             
@@ -493,7 +515,9 @@ Lead Nurturing System
             except Exception as e:
                 self.state.error_count += 1
                 logger.error(f"Error in nurturing loop: {e}")
-                await asyncio.sleep(300)  # Wait 5 minutes before retrying
+                # Exponential backoff up to 30 minutes
+                backoff_seconds = min(1800, 60 * (2 ** min(self.state.error_count, 5)))
+                await asyncio.sleep(backoff_seconds)
     
     async def run(self):
         """Run the MCP server"""

@@ -143,3 +143,12 @@ python lead_nurturer.py
 - ✅ Monitoring and control tools
 
 The lead nurturing system is **production-ready** and can be deployed immediately.
+
+## ♻️ Enhancements Added
+
+- Incremental Gmail sync with pagination and `gmail_sync_state.json` to avoid reprocessing
+- Config-driven sender identity (`sender_email`, `sender_name`) and automation flags
+- Safer division in status/reporting when counts are zero
+- Improved MIME parsing: prefers text/plain, falls back to stripped HTML
+- Exponential backoff in MCP background loop on consecutive errors
+- Dependency injection for Gmail service to enable unit testing

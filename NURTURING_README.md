@@ -9,6 +9,7 @@ A comprehensive system for automating lead nurturing, response tracking, and fol
 - **Response Tracking**: Monitors Gmail for replies and categorizes them
 - **Lead Scoring**: Tracks engagement and interest levels
 - **Smart Responses**: Automatically responds to interested leads
+- **Incremental Gmail Sync**: Idempotent response checks with pagination and state file
 
 ### 📊 Lead Management
 - **Status Tracking**: new → contacted → responded → interested/not_interested
@@ -66,8 +67,9 @@ python lead_dashboard.py
 ## 📈 How It Works
 
 ### 1. Response Monitoring
-- Checks Gmail every 4 hours for new responses
-- Analyzes email content for interest keywords
+- Incremental Gmail sync using `after:<timestamp>` and pagination
+- Maintains `gmail_sync_state.json` to avoid reprocessing messages
+- Analyzes email content (plain or HTML) for interest keywords
 - Updates lead status and scores automatically
 
 ### 2. Follow-up Sequences
@@ -99,11 +101,12 @@ The dashboard shows:
 
 ## ⚙️ Configuration
 
-Edit `nurturing_config.json` to customize:
+Edit `nurturing_config.json` to customize and supply sender identity:
 
 ```json
 {
   "sender_email": "your-email@domain.com",
+  "sender_name": "Your Name",
   "follow_up_schedule": {
     "followup_1_days": 3,
     "followup_2_days": 7
@@ -111,13 +114,18 @@ Edit `nurturing_config.json` to customize:
   "response_keywords": {
     "interested": ["interested", "yes", "demo"],
     "not_interested": ["not interested", "no thanks"]
+  },
+  "automation": {
+    "check_responses_interval_hours": 4,
+    "auto_respond_to_interest": true,
+    "auto_send_follow_ups": true
   }
 }
 ```
 
 ## 🔄 Automation Schedule
 
-- **Response Checking**: Every 4 hours
+- **Response Checking**: Every 4 hours (configurable); incremental with idempotency
 - **Follow-up Sending**: Based on last contact date
 - **Data Saving**: After each cycle
 - **Report Generation**: After each cycle
